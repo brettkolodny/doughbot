@@ -82,7 +82,7 @@ class Bot(discord.Client):
             time.sleep(0.5)
             count += 1
         else:
-            
+            pass
 
     @restrict_to("Admin")
     async def mute_user(self, message):
