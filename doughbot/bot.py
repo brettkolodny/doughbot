@@ -7,7 +7,7 @@ import time
 import threading
 from random import choice
 from pyfp import Pipe, Match
-from doughbot.bot_helpers import command_prefix, restrict_to, get_role
+from doughbot.bot_helpers import command_prefix, restrict_to, get_role, log
 
 MUTE_REGEX = re.compile(r"^mute <@!\d+> \d+[s,m,h,d,w]")
 
@@ -80,14 +80,48 @@ class Bot(discord.Client):
                 break
 
             time.sleep(0.5)
-            count += 1
+            try_count += 1
         else:
-            pass
+            dm_future = asyncio.run_coroutine_threadsafe(member.create_dm(), loop)
+
+            try_count = 0
+            while not dm_future.done():
+                if try_count > 5:
+                    break
+
+                time.sleep(0.5)
+                try_count += 1
+            else:
+                dm = dm_future.result()
+                send_future = asyncio.run_coroutine_threadsafe(dm.send("Unmuted"), loop)
+
+                try_count = 0
+                while not send_future.done():
+                    if try_count > 5:
+                        break
+
+                    time.sleep(0.5)
+                    try_count += 1
+                else:
+                    return
 
     @restrict_to("Admin")
     async def mute_user(self, message):
-        duration = message.content.split(" ")[2]
-        print(duration)
+        amount, base = Pipe(message.content) \
+            .to(lambda x: x.split(" ")) \
+            .to(lambda x: x[2]) \
+            .to(re.split, r"(s|m|h|d|w)") \
+            .to(lambda x: (int(x[0]), x[1])) \
+            .get()
+
+        duration = Match(base) \
+            .branch("s", lambda: amount) \
+            .branch("m", lambda: amount * 60) \
+            .branch("h", lambda: amount * 3600) \
+            .branch("d", lambda: amount * 86400) \
+            .branch("w", lambda: amount * 604800) \
+            .get() 
+
         mute_role = get_role(message.guild, "Muted")
         if mute_role.is_empty():
             print("No mute role")
@@ -99,7 +133,11 @@ class Bot(discord.Client):
         await muted_member.add_roles(mute_role)
         await message.channel.send(f"Muting {muted_member}")
 
+        user_dm = await muted_member.create_dm()
+        await user_dm.send(f"Muted for {amount}{base}")
+
+
         event_loop = asyncio.get_event_loop()
-        unmute_thread = threading.Thread(target=Bot.unmute_user, args=(muted_member, mute_role, 100, event_loop))
+        unmute_thread = threading.Thread(target=Bot.unmute_user, args=(muted_member, mute_role, duration, event_loop))
         unmute_thread.start()
 

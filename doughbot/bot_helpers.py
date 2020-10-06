@@ -42,3 +42,7 @@ def restrict_to(role):
         
         return inner
     return wrapper
+
+def log(x):
+    print(x)
+    return(x)
