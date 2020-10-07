@@ -7,6 +7,7 @@ import time
 import threading
 from random import choice
 from pyfp import Pipe, Match
+from pymongo import MongoClient
 from doughbot.bot_helpers import command_prefix, restrict_to, get_role, log
 
 MUTE_REGEX = re.compile(r"^mute <@!\d+> \d+[s,m,h,d,w]")
@@ -24,10 +25,16 @@ class Bot(discord.Client):
             
             self._token = config["token"]
             self._pixbay_key = config["pixbay-key"]
+
+        self.db = MongoClient('localhost', 27017).doughmee_server
         
         super().run(self._token)
 
     async def on_ready(self):
+        event_loop = asyncio.get_event_loop()
+        unmute_thread = threading.Thread(target=self.unmute_loop, args=[event_loop])
+        unmute_thread.start()
+
         print("Logged in")
 
     @command_prefix(">")
@@ -69,41 +76,29 @@ class Bot(discord.Client):
 
             await channel.send(f"{message.author.mention} Order up!", embed=doughnut_embed)
     
-    @staticmethod
-    def unmute_user(member, mute_role, duration, loop):
-        time.sleep(duration)
-        future = asyncio.run_coroutine_threadsafe(member.remove_roles(mute_role), loop)
+    def unmute_loop(self, event_loop):
+        guild = self.guilds[0]
+        muted_role = get_role(guild, "Muted").unwrap()
         
-        try_count = 0
-        while not future.done():
-            if try_count > 5:
-                break
+        while True:
+            for muted in self.db.muted_users.find():
+                if time.time() - muted["muted_time"] >= muted["duration"]:
+                    member = guild.get_member(muted["user"])
+                    future = asyncio.run_coroutine_threadsafe(self.unmute_member(member, muted_role), event_loop)
+                    while not future.done():
+                        time.sleep(0.1)
+                    else:
+                        self.db.muted_users.delete_one({"user": muted["user"]})
+            
+            time.sleep(1)
 
-            time.sleep(0.5)
-            try_count += 1
-        else:
-            dm_future = asyncio.run_coroutine_threadsafe(member.create_dm(), loop)
-
-            try_count = 0
-            while not dm_future.done():
-                if try_count > 5:
-                    break
-
-                time.sleep(0.5)
-                try_count += 1
-            else:
-                dm = dm_future.result()
-                send_future = asyncio.run_coroutine_threadsafe(dm.send("Unmuted"), loop)
-
-                try_count = 0
-                while not send_future.done():
-                    if try_count > 5:
-                        break
-
-                    time.sleep(0.5)
-                    try_count += 1
-                else:
-                    return
+    async def unmute_member(self, member, muted_role):
+        try:
+            await member.remove_roles(muted_role)
+            dm = await member.create_dm()
+            await dm.send("Unmuted")
+        except Exception as e:
+            print(e)
 
     @restrict_to("Admin")
     async def mute_user(self, message):
@@ -136,8 +131,7 @@ class Bot(discord.Client):
         user_dm = await muted_member.create_dm()
         await user_dm.send(f"Muted for {amount}{base}")
 
+        self.db.muted_users.insert_one({"user": muted_member.id, "muted_time": time.time(), "duration": duration})
 
-        event_loop = asyncio.get_event_loop()
-        unmute_thread = threading.Thread(target=Bot.unmute_user, args=(muted_member, mute_role, duration, event_loop))
-        unmute_thread.start()
 
+       
